@@ -31,7 +31,7 @@ comp
 
 ## 🔧 Configuración
 
-El script guarda tu configuración en `~/.comprimir_config`. Puedes cambiar el tipo de compresión desde el menú principal.
+El script guarda tu configuración en `~/.comp_config`. Puedes cambiar el tipo de compresión desde el menú principal.
 
 ## 📋 Requisitos
 

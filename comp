@@ -4,7 +4,7 @@
 trap 'gum style --foreground 196 "🚪 Saliendo..."; exit 0' INT
 
 # Archivo de configuración
-CONFIG_FILE="$HOME/.comprimir_config"
+CONFIG_FILE="$HOME/.comp_config"
 
 # Función para leer configuración
 read_config() {
