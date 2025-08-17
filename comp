@@ -1,0 +1,374 @@
+#!/bin/bash
+
+# Capturar Ctrl+C
+trap 'gum style --foreground 196 "🚪 Saliendo..."; exit 0' INT
+
+# Archivo de configuración
+CONFIG_FILE="$HOME/.comprimir_config"
+
+# Función para leer configuración
+read_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        cat "$CONFIG_FILE"
+    else
+        echo "tar.gz"  # Valor por defecto
+    fi
+}
+
+# Función para escribir configuración
+write_config() {
+    echo "$1" > "$CONFIG_FILE"
+}
+
+# Función para generar nombre único de archivo
+generate_unique_filename() {
+    local base_name="$1"
+    local counter=1
+    local filename="$base_name"
+    
+    while [[ -f "$filename" ]]; do
+        # Separar nombre y extensión
+        local name_without_ext="${base_name%.*}"
+        local extension="${base_name##*.}"
+        
+        if [[ "$name_without_ext" == "$base_name" ]]; then
+            # No hay extensión
+            filename="${base_name}($counter)"
+        else
+            # Hay extensión
+            filename="${name_without_ext}($counter).${extension}"
+        fi
+        
+        ((counter++))
+    done
+    
+    echo "$filename"
+}
+
+# Función para mostrar configuración actual
+show_config() {
+    local current_config=$(read_config)
+    echo -n "$(gum style --foreground 51 "🔧 Configuración actual: ")"
+    gum style --foreground 212 "$current_config"
+}
+
+# Función para cambiar configuración
+change_config() {
+    local current_config=$(read_config)
+    local options=("tar.gz" "tar.bz2" "tar.xz" "tar.zst" "7z" "zip")
+    
+    local new_config=$(printf '%s\n' "${options[@]}" | gum choose --header "Selecciona el tipo de compresión")
+    
+    if [[ -n "$new_config" ]]; then
+        write_config "$new_config"
+        gum style --foreground 82 "✅ Configuración actualizada a: $new_config"
+        
+        # Verificar e instalar dependencias para el nuevo tipo
+        check_dependency_silent "$new_config"
+    fi
+}
+
+# Función para detectar el sistema operativo y gestor de paquetes
+detect_package_manager() {
+    if command -v apt-get &> /dev/null; then
+        echo "apt"
+    elif command -v dnf &> /dev/null; then
+        echo "dnf"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
+    elif command -v pacman &> /dev/null; then
+        echo "pacman"
+    elif command -v zypper &> /dev/null; then
+        echo "zypper"
+    elif command -v brew &> /dev/null; then
+        echo "brew"
+    else
+        echo "unknown"
+    fi
+}
+
+# Función para obtener comando de instalación de gum
+get_gum_install_command() {
+    local pkg_manager=$(detect_package_manager)
+    case $pkg_manager in
+        "apt")
+            echo "sudo apt-get update && sudo apt-get install -y gum"
+            ;;
+        "dnf")
+            echo "sudo dnf install -y gum"
+            ;;
+        "yum")
+            echo "sudo yum install -y gum"
+            ;;
+        "pacman")
+            echo "sudo pacman -S gum"
+            ;;
+        "zypper")
+            echo "sudo zypper install gum"
+            ;;
+        "brew")
+            echo "brew install gum"
+            ;;
+        *)
+            echo "echo '❌ No se pudo detectar el gestor de paquetes. Instala gum manualmente desde: https://github.com/charmbracelet/gum'"
+            ;;
+    esac
+}
+
+# Función para comprimir según el tipo configurado
+compress_folder() {
+    local folder="$1"
+    local output_file="$2"
+    local compression_type="$3"
+    
+    case "$compression_type" in
+        "tar.gz")
+            gum spin --spinner dot --title "Comprimiendo con tar + gzip..." -- \
+                tar --exclude="$folder/node_modules" \
+                    --exclude="$folder/vendor" \
+                    -cvf - "$folder" | gzip > "$output_file"
+            ;;
+        "tar.bz2")
+            gum spin --spinner dot --title "Comprimiendo con tar + bzip2..." -- \
+                tar --exclude="$folder/node_modules" \
+                    --exclude="$folder/vendor" \
+                    -cvf - "$folder" | bzip2 > "$output_file"
+            ;;
+        "tar.xz")
+            gum spin --spinner dot --title "Comprimiendo con tar + xz..." -- \
+                tar --exclude="$folder/node_modules" \
+                    --exclude="$folder/vendor" \
+                    -cvf - "$folder" | xz > "$output_file"
+            ;;
+        "tar.zst")
+            gum spin --spinner dot --title "Comprimiendo con tar + zstd..." -- \
+                tar --exclude="$folder/node_modules" \
+                    --exclude="$folder/vendor" \
+                    -cvf - "$folder" | zstd > "$output_file"
+            ;;
+        "7z")
+            gum spin --spinner dot --title "Comprimiendo con 7z..." -- \
+                7z a -t7z -m0=lzma2 -mx=9 "$output_file" "$folder" -xr!"$folder/node_modules" -xr!"$folder/vendor" > /dev/null
+            ;;
+        "zip")
+            gum spin --spinner dot --title "Comprimiendo con zip..." -- \
+                zip -r "$output_file" "$folder" -x "$folder/node_modules/*" "$folder/vendor/*" > /dev/null
+            ;;
+        *)
+            gum style --foreground 196 "❌ Tipo de compresión no válido: $compression_type"
+            exit 1
+            ;;
+    esac
+}
+
+# Verificar si gum está instalado
+if ! command -v gum &> /dev/null; then
+    echo "❌ Gum no está instalado."
+    echo "💡 Instálalo con: $(get_gum_install_command)"
+    echo "📖 O descárgalo desde: https://github.com/charmbracelet/gum"
+    exit 1
+fi
+
+# Función para instalar dependencias
+install_dependency() {
+    local dependency="$1"
+    local pkg_manager=$(detect_package_manager)
+    local first_time="$2"
+    
+    if [[ "$first_time" == "true" ]]; then
+        gum style --foreground 51 "📦 Instalando $dependency por primera vez..."
+    fi
+    
+    case $pkg_manager in
+        "apt")
+            if ! sudo apt-get update -qq && sudo apt-get install -y -qq "$dependency" >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        "dnf")
+            if ! sudo dnf install -y -q "$dependency" >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        "yum")
+            if ! sudo yum install -y -q "$dependency" >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        "pacman")
+            if ! sudo pacman -S "$dependency" --noconfirm --quiet >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        "zypper")
+            if ! sudo zypper install "$dependency" --non-interactive --quiet >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        "brew")
+            if ! brew install "$dependency" >/dev/null 2>&1; then
+                gum style --foreground 196 "❌ Error al instalar $dependency"
+                exit 1
+            fi
+            ;;
+        *)
+            gum style --foreground 196 "❌ No se pudo detectar el gestor de paquetes. Instala $dependency manualmente."
+            exit 1
+            ;;
+    esac
+    
+    if [[ "$first_time" == "true" ]]; then
+        gum style --foreground 82 "✅ $dependency instalado correctamente"
+    fi
+}
+
+# Verificar dependencias según configuración actual
+check_dependencies() {
+    local compression_type=$(read_config)
+    case "$compression_type" in
+        "tar.gz")
+            if ! command -v gzip &> /dev/null; then
+                install_dependency "gzip" "true"
+            fi
+            ;;
+        "tar.bz2")
+            if ! command -v bzip2 &> /dev/null; then
+                install_dependency "bzip2" "true"
+            fi
+            ;;
+        "tar.xz")
+            if ! command -v xz &> /dev/null; then
+                install_dependency "xz-utils" "true"
+            fi
+            ;;
+        "tar.zst")
+            if ! command -v zstd &> /dev/null; then
+                install_dependency "zstd" "true"
+            fi
+            ;;
+        "7z")
+            if ! command -v 7z &> /dev/null; then
+                install_dependency "p7zip" "true"
+            fi
+            ;;
+        "zip")
+            if ! command -v zip &> /dev/null; then
+                install_dependency "zip" "true"
+            fi
+            ;;
+    esac
+}
+
+# Verificar dependencias para un tipo específico (sin mensajes)
+check_dependency_silent() {
+    local compression_type="$1"
+    case "$compression_type" in
+        "tar.gz")
+            if ! command -v gzip &> /dev/null; then
+                install_dependency "gzip" "false"
+            fi
+            ;;
+        "tar.bz2")
+            if ! command -v bzip2 &> /dev/null; then
+                install_dependency "bzip2" "false"
+            fi
+            ;;
+        "tar.xz")
+            if ! command -v xz &> /dev/null; then
+                install_dependency "xz-utils" "false"
+            fi
+            ;;
+        "tar.zst")
+            if ! command -v zstd &> /dev/null; then
+                install_dependency "zstd" "false"
+            fi
+            ;;
+        "7z")
+            if ! command -v 7z &> /dev/null; then
+                install_dependency "p7zip" "false"
+            fi
+            ;;
+        "zip")
+            if ! command -v zip &> /dev/null; then
+                install_dependency "zip" "false"
+            fi
+            ;;
+    esac
+}
+
+# Función del menú principal
+main_menu() {
+    # Título
+    gum style \
+        --foreground 212 --border-foreground 212 --border double \
+        --align center --width 50 --margin "1 2" --padding "1 2" \
+        "COMPRIMIR CARPETAS"
+
+    # Mostrar configuración actual
+    show_config
+
+    # Menú principal
+    echo ""
+    action=$(gum choose --header "¿Qué quieres hacer?" "Comprimir carpeta" "Cambiar configuración" "Salir")
+
+    case "$action" in
+        "Comprimir carpeta")
+            # Menú para elegir carpeta
+            CARPETA=$(ls -d */ 2>/dev/null | gum choose --header "Selecciona la carpeta a comprimir" | tr -d '/')
+
+            if [[ -z "$CARPETA" ]]; then
+                gum style --foreground 196 "❌ No seleccionaste ninguna carpeta."
+                return
+            fi
+
+            # Obtener configuración actual
+            COMPRESSION_TYPE=$(read_config)
+            
+            # Preguntar nombre de archivo
+            ARCHIVO=$(gum input --placeholder "Nombre del archivo (.$COMPRESSION_TYPE)" --value "$CARPETA.$COMPRESSION_TYPE")
+            if [[ -z "$ARCHIVO" ]]; then
+                ARCHIVO="$CARPETA.$COMPRESSION_TYPE"
+            fi
+
+            # Generar nombre único si el archivo ya existe
+            if [[ -f "$ARCHIVO" ]]; then
+                ARCHIVO=$(generate_unique_filename "$ARCHIVO")
+                gum style --foreground 51 "📝 Archivo ya existe, usando: $ARCHIVO"
+            fi
+
+            # Mensaje inicial
+            gum style --foreground 51 "📦 Creando archivo: $ARCHIVO"
+
+            # Comprimir según el tipo configurado
+            compress_folder "$CARPETA" "$ARCHIVO" "$COMPRESSION_TYPE"
+
+            # Verificar si el archivo se creó correctamente
+            if [[ -f "$ARCHIVO" ]]; then
+                # Peso final
+                TAM=$(du -h "$ARCHIVO" | cut -f1)
+                gum style --foreground 82 "✅ Archivo comprimido creado: $ARCHIVO ($TAM)"
+                exit 0
+            else
+                gum style --foreground 196 "❌ Error: No se pudo crear el archivo $ARCHIVO"
+                exit 1
+            fi
+            ;;
+        "Cambiar configuración")
+            change_config
+            ;;
+        "Salir"|"")
+            gum style --foreground 196 "🚪 Saliendo..."
+            exit 0
+            ;;
+    esac
+}
+
+# Bucle principal
+while true; do
+    main_menu
+done
