@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Capturar Ctrl+C
-trap 'gum style --foreground 196 "🚪 Saliendo..."; exit 0' INT
+trap 'printf "\033[?25h" >&2; gum style --foreground 196 "🚪 Saliendo..."; exit 0' INT
 
 # Archivo de configuración
 CONFIG_FILE="$HOME/.comp_config"
@@ -57,15 +57,16 @@ change_config() {
     local current_config=$(read_config)
     local options=("tar.gz" "tar.bz2" "tar.xz" "tar.zst" "7z" "zip")
     
-    local new_config=$(printf '%s\n' "${options[@]}" | gum choose --header "Selecciona el tipo de compresión")
-    
-    if [[ -n "$new_config" ]]; then
-        write_config "$new_config"
-        gum style --foreground 82 "✅ Configuración actualizada a: $new_config"
-        
-        # Verificar e instalar dependencias para el nuevo tipo
-        check_dependency_silent "$new_config"
+    if ! choose_option "Selecciona el tipo de compresión" "x  Abortar" "${options[@]}"; then
+        return
     fi
+    local new_config="$CHOICE"
+
+    write_config "$new_config"
+    gum style --foreground 82 "✅ Configuración actualizada a: $new_config"
+
+    # Verificar e instalar dependencias para el nuevo tipo
+    check_dependency_silent "$new_config"
 }
 
 # Función para detectar el sistema operativo y gestor de paquetes
@@ -301,6 +302,143 @@ check_dependency_silent() {
     esac
 }
 
+# Menú con abortar visible.
+# x / X o Escape cancelan. Enter elige la fila marcada.
+# La opción de abortar siempre queda a la vista.
+# Resultado en CHOICE. Devuelve 1 si se aborta.
+choose_option() {
+    local header="$1"
+    local abort_label="$2"
+    shift 2
+
+    local options=("$@")
+    local user_count=${#options[@]}
+    local index=0
+    local drawn=0
+    local win=8
+    local total_lines
+    local key seq saved c
+
+    CHOICE=""
+
+    if [[ $user_count -eq 0 ]]; then
+        return 1
+    fi
+
+    if [[ $user_count -lt $win ]]; then
+        win=$user_count
+    fi
+    # encabezado + filas + separador + abortar + línea en blanco + ayuda
+    total_lines=$((win + 5))
+
+    local reset=$'\033[0m'
+    local c_header=$'\033[38;5;99m'
+    local c_cursor=$'\033[38;5;212m'
+    local c_abort=$'\033[38;5;196m'
+    local c_dim=$'\033[38;5;245m'
+
+    restore_choose_ui() {
+        printf '\033[?25h' >&2
+        if [[ $drawn -eq 1 ]]; then
+            printf '\033[%dA\033[J' "$total_lines" >&2
+            drawn=0
+        fi
+    }
+
+    draw_choose() {
+        local i start=0
+
+        if [[ $user_count -gt $win ]]; then
+            if [[ $index -ge $user_count ]]; then
+                start=$((user_count - win))
+            elif [[ $index -ge $win ]]; then
+                start=$((index - win + 1))
+            fi
+        fi
+
+        if [[ $drawn -eq 1 ]]; then
+            printf '\033[%dA' "$total_lines" >&2
+        fi
+
+        printf '%s%s%s\033[K\n' "$c_header" "$header" "$reset" >&2
+
+        i=$start
+        while [[ $i -lt $((start + win)) ]]; do
+            if [[ $i -eq $index ]]; then
+                printf '%s> %s%s\033[K\n' "$c_cursor" "${options[$i]}" "$reset" >&2
+            else
+                printf '  %s\033[K\n' "${options[$i]}" >&2
+            fi
+            i=$((i + 1))
+        done
+
+        printf '%s  ────────────%s\033[K\n' "$c_dim" "$reset" >&2
+
+        if [[ $index -eq $user_count ]]; then
+            printf '%s> %s%s\033[K\n' "$c_abort" "$abort_label" "$reset" >&2
+        else
+            printf '%s  %s%s\033[K\n' "$c_dim" "$abort_label" "$reset" >&2
+        fi
+
+        printf '\033[K\n' >&2
+        printf '%s↑↓ mover · enter elegir · x/esc abortar%s\033[K\n' "$c_dim" "$reset" >&2
+        drawn=1
+    }
+
+    printf '\033[?25l' >&2
+
+    while true; do
+        draw_choose
+        key=""
+        if ! IFS= read -rsn1 key; then
+            restore_choose_ui
+            return 1
+        fi
+
+        if [[ $key == $'\033' ]]; then
+            # read -n vuelve a poner el terminal en espera, así que Esc
+            # solo se distingue de una flecha leyendo con VMIN=0.
+            seq=""
+            saved=$(stty -g)
+            stty -icanon min 0 time 1 -echo
+            c=$(dd bs=1 count=1 2>/dev/null)
+            if [[ -n $c ]]; then
+                seq="$c"
+                c=$(dd bs=1 count=1 2>/dev/null)
+                seq="${seq}${c}"
+            fi
+            stty "$saved"
+
+            case "$seq" in
+                '[A'|'OA')
+                    index=$(( (index + user_count) % (user_count + 1) ))
+                    ;;
+                '[B'|'OB')
+                    index=$(( (index + 1) % (user_count + 1) ))
+                    ;;
+                *)
+                    restore_choose_ui
+                    return 1
+                    ;;
+            esac
+        elif [[ $key == "x" || $key == "X" ]]; then
+            restore_choose_ui
+            return 1
+        elif [[ $key == "k" ]]; then
+            index=$(( (index + user_count) % (user_count + 1) ))
+        elif [[ $key == "j" ]]; then
+            index=$(( (index + 1) % (user_count + 1) ))
+        elif [[ -z $key || $key == $'\r' || $key == $'\n' ]]; then
+            restore_choose_ui
+            if [[ $index -eq $user_count ]]; then
+                return 1
+            fi
+            CHOICE="${options[$index]}"
+            return 0
+        fi
+    done
+}
+
 # Función del menú principal
 main_menu() {
     # Título
@@ -314,23 +452,43 @@ main_menu() {
 
     # Menú principal
     echo ""
-    action=$(gum choose --header "¿Qué quieres hacer?" "Comprimir carpeta" "Cambiar configuración" "Salir")
+    if ! choose_option "¿Qué quieres hacer?" "x  Salir" "Comprimir carpeta" "Cambiar configuración"; then
+        gum style --foreground 196 "🚪 Saliendo..."
+        exit 0
+    fi
+    action="$CHOICE"
 
     case "$action" in
         "Comprimir carpeta")
-            # Menú para elegir carpeta
-            CARPETA=$(ls -d */ 2>/dev/null | gum choose --header "Selecciona la carpeta a comprimir" | tr -d '/')
+            local folders=()
+            local dir
+            for dir in */; do
+                [[ -d "$dir" ]] || continue
+                folders+=("${dir%/}")
+            done
 
-            if [[ -z "$CARPETA" ]]; then
-                gum style --foreground 196 "❌ No seleccionaste ninguna carpeta."
+            if [[ ${#folders[@]} -eq 0 ]]; then
+                gum style --foreground 196 "❌ No hay carpetas en este directorio."
                 return
             fi
+
+            echo ""
+            if ! choose_option "Selecciona la carpeta a comprimir" "x  Abortar" "${folders[@]}"; then
+                return
+            fi
+            CARPETA="$CHOICE"
 
             # Obtener configuración actual
             COMPRESSION_TYPE=$(read_config)
             
-            # Preguntar nombre de archivo
-            ARCHIVO=$(gum input --placeholder "Nombre del archivo (.$COMPRESSION_TYPE)" --value "$CARPETA.$COMPRESSION_TYPE")
+            # Preguntar nombre de archivo. Escape aborta.
+            echo ""
+            if ! ARCHIVO=$(gum input \
+                --header "Nombre del archivo · esc para abortar" \
+                --placeholder "Nombre del archivo (.$COMPRESSION_TYPE)" \
+                --value "$CARPETA.$COMPRESSION_TYPE"); then
+                return
+            fi
             if [[ -z "$ARCHIVO" ]]; then
                 ARCHIVO="$CARPETA.$COMPRESSION_TYPE"
             fi
@@ -360,10 +518,6 @@ main_menu() {
             ;;
         "Cambiar configuración")
             change_config
-            ;;
-        "Salir"|"")
-            gum style --foreground 196 "🚪 Saliendo..."
-            exit 0
             ;;
     esac
 }
